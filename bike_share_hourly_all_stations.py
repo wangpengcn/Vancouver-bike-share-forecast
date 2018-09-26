@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Sep 20 13:27:03 2018
+Created on Thu Sep 13 13:27:03 2018
 
 @author: Peng
-
-1. How many bikes are rented out each hour (demand)
-2. How many bikes are rented and returned each day for high-traffic location (num>300)
 
 Temperature: provided in the original data
 Other weather info and air quality: BC Air Data Archive https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data/bc-air-data-archive
@@ -38,18 +35,22 @@ BEGIN_DATE = date(2017,1,1)
 END_DATE = date(2018,7,31)
 TEST_START_DATE = date(2018,7,25)
 TEST_END_DATE = date(2018,7,31)
-PATH_DATA =r'./data' 
-PATH_MODEL =r'./models' 
+PATH_DATA = r'./data/' 
+PATH_MODEL = r'./models/' 
+FN_WEATHER = r'Weather_YVR_20170101_20180731.csv'
+FN_HOLIDAY_BC = r'holidays_bc.csv'
+FN_SAVED_MODEL = r'bike_rental_xgb.model'
+FN_SAVED_PREDICTIONS = r'predictions.csv'
+
 # Load bike share data
-data_files = glob.glob(PATH_DATA + "/Mobi*.xlsx")
+data_files = glob.glob(PATH_DATA + "Mobi*.xlsx")
 data_orig = pd.DataFrame()
 list_ = []
 for file_ in data_files:
     df = pd.read_excel(file_)
     list_.append(df)
 data_orig = pd.concat(list_, ignore_index=True, sort=False)
-
-#data_orig.isnull().sum()
+# Add/extrac datetime related features
 data_orig['Date'] = data_orig['Departure'].dt.date
 data_orig = data_orig[(BEGIN_DATE<=data_orig['Date']) & (data_orig['Date']<=END_DATE)]
 data_orig['Year'] = data_orig['Departure'].dt.year
@@ -61,18 +62,49 @@ seasons = {1:'Winter', 2:'Winter', 3:'Spring', 4:'Spring', 5:'Spring', 6:'Summer
            9:'Autumn', 10:'Autumn', 11:'Autumn', 12:'Winter'}
 data_orig['Season'] = [seasons[x] for x in data_orig['Month'].values]
 
-# Extract bike station stats
-stations_depart = data_orig.groupby(['Year','Season','Month','DayOfMonth','Date','Departure station'], as_index=False).agg(
-                       {'Departure':'count'})
-stations_depart.rename(columns={'Departure station':'Station'}, inplace=True)
-stations_return = data_orig.groupby(['Year','Season','Month','DayOfMonth','Date','Return station'], as_index=False).agg(
-                       {'Return':'count'})
-stations_return.rename(columns={'Return station':'Station'}, inplace=True)
-stations = pd.merge(stations_depart, stations_return, how='left', on=['Year','Season','Month','DayOfMonth','Date','Station'])
-stations['Return'].fillna(0.0, inplace=True)
+# -----------  Data visualization ----------
+# Bike usage summary
+fig, axes = plt.subplots(2,2,figsize=(18,10))
+fig.suptitle('Bike usage summary \n{} to {}'.format(BEGIN_DATE, END_DATE),fontsize=16)
+data_orig.loc[data_orig['Membership type']=='Single Trip Pass', 'Membership type'] = 'Archived Single Trip Pass'
+ax = data_orig['Membership type'].value_counts(ascending=True).plot.barh(ax=axes[0,0])
+ax.set_ylabel('Membership')
+ax.set_xlabel('Number of bikes rented')
+ax.set_yticklabels(ax.get_yticklabels(),size=8)
+ax.set_title('Bike rentals by membership', fontsize=12)
+ax = sns.boxplot(x='variable', y='value', data=pd.melt(data_orig[['Duration (sec.)','Covered distance (m)']]), 
+            showfliers=False, ax=axes[0,1])
+ax.set_title('Average bike trip', fontsize=12)
+ax.set_ylabel('')
+ax.set_xlabel('')
+stations = data_orig.groupby(['Departure station','Date'], as_index=False).agg({'Departure':'count'}).groupby('Departure station', as_index=False).agg({'Departure':'median'})
+stations.rename(columns={'Departure':'Daily departures (median)'}, inplace=True)
+ax = sns.barplot(y='Departure station', x='Daily departures (median)', 
+            data=stations.sort_values(by='Daily departures (median)', ascending=False).head(20), 
+            orient ='h', ax=axes[1,0])
+ax.set_yticklabels(ax.get_yticklabels(),size=8)
+ax.set_title('Top 20 bike rental locations', fontsize=12)
+riders = pd.DataFrame(data_orig['Account'].value_counts(ascending=False))
+#riders.describe()
+#riders: inactive <= 10, occasional < 100, freq >= 100
+riders['Category'] = riders['Account'].apply(lambda x: 'Freq' if x>100 else 'Inactive' if x<10 else 'Occasional')
+ax = riders['Category'].value_counts().plot.pie(startangle=90, labels=None, autopct='%1.1f%%', textprops={'fontsize': 10}, ax=axes[1,1])
+ax.legend(loc=2, labels=['Inactive rider (<10 rides)', 'Occasional rider (10 to 100 rides)', 'Frequent rider (>100 rides)'], prop={'size':8})
+ax.axis('equal')
+ax.set_title('Frequency of bike usage by rider in 19 months', fontsize=12)
+ax.set_ylabel('')
+plt.tight_layout(rect=[0, 0.03, 1, 0.92])
+
+# Get BC holidays
+# Data from https://www.officeholidays.com/
+holidays_bc = pd.read_csv(PATH_DATA+FN_HOLIDAY_BC)
+holidays_bc.rename(columns={'Holiday':'Holiday_bc'}, inplace=True)
+holidays_bc['Date'] = pd.to_datetime(holidays_bc['Date']).dt.date
+data_orig_merged = pd.merge(data_orig, holidays_bc[['Date','Holiday_bc']], how='left', on='Date')
+data_orig_merged['Holiday_bc'].fillna('', inplace=True)
 
 # Get weather info
-weather_vancouver = pd.read_csv(PATH_DATA+'/Weather_YVR_20170101_20180731.csv')
+weather_vancouver = pd.read_csv(PATH_DATA+FN_WEATHER)
 # Remove extra spaces from header
 weather_vancouver.rename(columns=lambda x: x.strip(), inplace=True)
 # Remove extra spaces from columns
@@ -85,44 +117,71 @@ weather_vancouver['Date Time'] = pd.to_datetime(pd.to_datetime(weather_vancouver
 # Missing entry for the first hour of the first day - copy the next entry
 weather_vancouver = pd.concat([weather_vancouver.head(1), weather_vancouver], axis=0, ignore_index=True)
 # Update to the correct time i.e. 00:00:00
-weather_vancouver['Date'] = weather_vancouver['Date Time'].dt.date
-weather_vancouver['TEMP_MEAN'] = pd.to_numeric(weather_vancouver['TEMP_MEAN'])
-daily_ave_temp = weather_vancouver.groupby(['Date'], as_index=False).agg({'TEMP_MEAN':'mean'})
-stations = pd.merge(stations, daily_ave_temp, how='left', on=['Date'])
-stations.rename(columns={'TEMP_MEAN':'Temperature'}, inplace=True)
-stations['Daily departure median'] = stations.groupby(['Station'])['Departure'].transform(lambda x: x.median())
+weather_vancouver.loc[0, 'Date Time'] = weather_vancouver.loc[0, 'Date Time'] + timedelta(hours=-1)
+# Merge with bike share data i.e. data_orig_merged
+weather_vancouver.rename(columns={'Date Time':'Departure'}, inplace=True)
+data_orig_merged = pd.merge(data_orig_merged, weather_vancouver[['Departure','PM25','WSPD_SCLR','PRECIP_TOTAL']], how='left', on='Departure')
+# Replace all empty values with 0.0
+data_orig_merged[['PM25','WSPD_SCLR','PRECIP_TOTAL']] = data_orig_merged[['PM25','WSPD_SCLR','PRECIP_TOTAL']].replace({'':0.0})
+data_orig_merged[['PM25','WSPD_SCLR','PRECIP_TOTAL']] = data_orig_merged[['PM25','WSPD_SCLR','PRECIP_TOTAL']].astype(float)
+
+# Prepare final data set: each row represents the number of bikes rented for a specific hour of a day
+data = pd.DataFrame()
+data = data_orig_merged.groupby(['Year','Month','DayOfMonth','HourOfDay'], as_index=False).agg(
+                       {'Departure':'count','Date':'first',
+                        'DayOfWeek':'first','Departure temperature (°C)':'mean',
+                        'Holiday_bc':'first', 'Season':'first','PM25':'first',
+                        'WSPD_SCLR':'first','PRECIP_TOTAL':'first'})
+data.rename(columns={'Departure':'Number of bikes rented', 
+                     'Departure temperature (°C)':'Temperature',
+                     'WSPD_SCLR':'WindSpeed',
+                     'PRECIP_TOTAL':'Precipitation'}, inplace=True)
 
 # -----------  Data visualization ----------
-ax = sns.catplot(y='Station', x='Departure', 
-            data=stations[stations['Daily departure median'] >= 25.0]
-            .sort_values(by='Daily departure median', ascending=False), kind='box', orient ='h', height=8)
-#ax.set_xticklabels(rotation=90, size=10)
-ax.fig.suptitle('Top bike rental locations \n{} to {}'.format(BEGIN_DATE, END_DATE),fontsize=16)
+# Trend analysis
+fig, axes = plt.subplots(2,2,figsize=(18,10))
+fig.suptitle('Trends of average DAILY number of bikes rented \n{} to {}'.format(BEGIN_DATE, END_DATE),fontsize=16)
+sns.barplot(x='Month', y='Number of bikes rented', estimator=np.mean, data=data, ci=None, ax=axes[0,0])
+sns.barplot(x='Season', y='Number of bikes rented', estimator=np.mean, data=data, ci=None, ax=axes[0,1])
+sns.barplot(x='DayOfMonth', y='Number of bikes rented', estimator=np.mean, data=data, ci=None, ax=axes[1,0])
+sns.barplot(x='DayOfWeek', y='Number of bikes rented', estimator=np.mean, data=data, ci=None, ax=axes[1,1])
+axes[1,1].set_xticklabels(['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
 plt.tight_layout(rect=[0, 0.03, 1, 0.92])
 
-sns.lineplot(x='Date', y='Departure', data=stations[stations['Daily departure median'] >= 25.0]
-            .sort_values(by='Daily departure median', ascending=False), hue='Station')
+# Correlation analysis 
+fig, axes = plt.subplots(2,2,figsize=(18,10))
+fig.suptitle('Other factors that may affect bike rentals \n{} to {}'.format(BEGIN_DATE, END_DATE),fontsize=16)
+sns.barplot(x='HourOfDay', y='Number of bikes rented', estimator=np.mean, data=data, ci=None, ax=axes[0,0])
+sns.heatmap(data[['Number of bikes rented','PM25','Temperature','Precipitation','WindSpeed']].corr(), annot=True, ax=axes[0,1])
+# Plot trend lines of daily number of bikes rented and temperature
+ax1 = data.groupby(['Date'])['Number of bikes rented'].mean().plot(ax=axes[1,0])
+ax1.set_ylabel('Number of bikes rented')
+ax1.legend(loc=0)
+ax2 = ax1.twinx()
+ax2.set_ylabel('Average Daily Temperature')
+data.groupby(['Date'])['Temperature'].mean().plot(ax=ax2, color='red')
+ax2.legend(loc=1)
+bikes_holiday = data.groupby('Holiday_bc').agg({'Number of bikes rented':'mean','Temperature':'mean'}).sort_values('Number of bikes rented').reset_index()
+bikes_holiday.loc[bikes_holiday['Holiday_bc']=='', 'Holiday_bc'] = 'Non-Holiday'
+bikes_holiday.set_index('Holiday_bc', inplace=True, drop=True)
+ax1 = bikes_holiday['Number of bikes rented'].plot.bar(ax=axes[1,1])
+ax1.set_ylabel('Number of bikes rented')
+ax2 = ax1.twinx()
+ax2.set_ylabel('Average Daily Temperatue')
+line2 = bikes_holiday['Temperature'].plot(ax=ax2, color='red')
+line2.legend(loc=1)
+axes[1,1].set_xticklabels(axes[1,1].get_xticklabels(), rotation=30)
+axes[1,1].axvspan(6.5, 11, color='red', alpha=0.3)
+plt.tight_layout(rect=[0, 0.03, 1, 0.92])
 
-# Get BC holidays
-# Data from https://www.officeholidays.com/
-holidays_bc = pd.read_csv('./data/holidays_bc.csv')
-holidays_bc.rename(columns={'Holiday':'Holiday_bc'}, inplace=True)
-holidays_bc['Date'] = pd.to_datetime(holidays_bc['Date']).dt.date
-data = pd.merge(stations, holidays_bc[['Date','Holiday_bc']], how='left', on='Date')
-data['Holiday_bc'].fillna('', inplace=True)
+ax = sns.pairplot(data, x_vars=['PM25','Temperature','Precipitation','WindSpeed'], y_vars=['Number of bikes rented'], height=4)
+ax.fig.suptitle('Distribution of DAILY number of bikes rented \n{} to {}'.format(BEGIN_DATE, END_DATE),fontsize=16)
+plt.tight_layout(rect=[0, 0.03, 1, 0.92])
 
-# Let's just focus on stations where have sufficient rentals
-data = data[data['Daily departure median'] >= 8.0]
-# ********************** DEBUG *******************
-data = data[data['Station'] =='0209 Stanley Park - Information Booth']
-# ********************** DEBUG END *******************
-data.rename(columns={'Departure':'Number of bikes rented'}, inplace=True)
 # Convert categorical columns
 data = pd.get_dummies(data, columns=['Holiday_bc','Season'])
 # Drop PM25 and WindSpeed as they do not appear to contribute prediction on bike rentals
-data.drop(columns=['Holiday_bc_','Station','Return'], inplace=True)
-
-sns.lineplot(x='Date', y='Number of bikes rented', data=data)
+data.drop(columns=['Holiday_bc_','PM25','WindSpeed'], inplace=True)
 # ---------------------------------------------------
 # ------------- Train Model -------------------------
 # ---------------------------------------------------
@@ -212,7 +271,7 @@ xgb_r2 = r2_score(test_y, xgb_preds)
 xgb_msle = np.sqrt(mean_squared_error(test_y, xgb_preds))
 # Compare the scores
 regres_perform = {'R2': [rf_r2,xgb_r2],
-                  'MSLE': [rf_msle,xgb_msle]} 
+                  'MSE': [rf_msle,xgb_msle]} 
 index_name = ['RF', 'XGB']
 regres_perform = pd.DataFrame(data=regres_perform, index=index_name)
 regres_perform
@@ -236,5 +295,5 @@ plt.xlabel('Hour of the day', fontsize='large')
 xgb.plot_importance(xgb_best)
 
 # Save prediction and model
-pickle.dump(xgb_best, open(PATH_DATA + '/bike_rental_xgb.model','wb'))
-pred.to_csv(PATH_MODEL+'/predictions.csv', index=False)
+pickle.dump(xgb_best, open(PATH_MODEL + FN_SAVED_MODEL,'wb'))
+pred.to_csv(PATH_DATA+FN_SAVED_PREDICTIONS, index=False)
