@@ -2,12 +2,17 @@
 """
 Created on Thu Sep 13 13:27:03 2018
 
-@author: Peng
+@author: Peng Wang
+
+Build GBM and Random Forest trees to predict hourly and daily bike share in downtown Vancouver
+Collected data from:
+- Historical bike rental data from Mobi website (https://www.mobibikes.ca/en/system-data)
+- Statutory holidays: OfficeHolidays (https://www.officeholidays.com/)
+- Weather information from Air Data Archive (https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data/bc-air-data-archive) by BC Government
 
 Temperature: provided in the original data
 Other weather info and air quality: BC Air Data Archive https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data/bc-air-data-archive
 Used observations from YVR monitoring station, instead of Vancouver Harbour station which doe not have air quality or wind speed
-
 """
 
 import pandas as pd
@@ -264,14 +269,14 @@ print('---------------------------------------')
 rf_preds = rf_best.predict(test_x).astype(int) # Convert fractions to whole numbers
 # RF R2-score and MSLE
 rf_r2 = r2_score(test_y, rf_preds)
-rf_msle = np.sqrt(mean_squared_error(test_y, rf_preds))
+rf_rmse = np.sqrt(mean_squared_error(test_y, rf_preds))
 # Prediction using XGB
 xgb_preds = xgb_best.predict(test_x).astype(int) # Convert fractions to whole numbers
 xgb_r2 = r2_score(test_y, xgb_preds)
-xgb_msle = np.sqrt(mean_squared_error(test_y, xgb_preds))
+xgb_rmse = np.sqrt(mean_squared_error(test_y, xgb_preds))
 # Compare the scores
 regres_perform = {'R2': [rf_r2,xgb_r2],
-                  'MSE': [rf_msle,xgb_msle]} 
+                  'RMSE': [rf_rmse,xgb_rmse]} 
 index_name = ['RF', 'XGB']
 regres_perform = pd.DataFrame(data=regres_perform, index=index_name)
 regres_perform
@@ -291,8 +296,19 @@ axes[int(NUM_SUBPLOTS/2)].figure.text(0.05,0.5, "Number of bikes rented", \
     ha="center", va="center", rotation=90, fontsize='large')
 axes[0].legend(loc='upper left')
 plt.xlabel('Hour of the day', fontsize='large')
-# Plot important feature scores
-xgb.plot_importance(xgb_best)
+# Plot XGB important feature scores
+# xgb.plot_importance(xgb_best)
+
+# Plot RF and XGB feature importances
+fig, axes = plt.subplots(2,1,figsize=(18,10))
+rf_importances = pd.DataFrame({'feature':test_x.columns,'importance':np.round(rf_best.feature_importances_,3)})
+rf_importances = rf_importances.sort_values('importance',ascending=True).set_index('feature')
+rf_importances.plot.barh(color='r', ax=axes[0])
+axes[0].set_title('Random Forest feature importances', fontsize=12)
+xgb_importances = pd.DataFrame({'feature':test_x.columns,'importance':np.round(xgb_best.feature_importances_,3)})
+xgb_importances = xgb_importances.sort_values('importance',ascending=True).set_index('feature')
+xgb_importances.plot.barh(color='b', ax=axes[1])
+axes[1].set_title('XGB feature importances', fontsize=12)
 
 # Save prediction and model
 pickle.dump(xgb_best, open(PATH_MODEL + FN_SAVED_MODEL,'wb'))
