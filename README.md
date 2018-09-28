@@ -30,9 +30,9 @@ This will open the iPython Notebook software and project file in your browser.
 
 ## Data
 Data collected from:
-- Historical bike rental data from [Mobi website] (https://www.mobibikes.ca/en/system-data)
-- Statutory holidays: [OfficeHolidays] (https://www.officeholidays.com/)
-- Weather information from [Air Data Archive] (https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data/bc-air-data-archive) by BC Government
+- Historical bike rental data from [Mobi website](https://www.mobibikes.ca/en/system-data)
+- Statutory holidays: [OfficeHolidays](https://www.officeholidays.com/)
+- Weather information from [Air Data Archive](https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data/bc-air-data-archive) by BC Government
 
 ## Project workflow
 ![image](./figures/bikeshare_flowchart.png)
